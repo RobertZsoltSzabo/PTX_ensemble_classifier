@@ -14,17 +14,19 @@ Parameters:
     --lr: learning rate.
     --dropout-rate: dropout rate for the models.
     --train-image-size: size of the images to train on. The images will be resized to this size. Should be quadratic.
-    --print-progress: Setting it to True will print accuracy and loss after each epoch. Defaulted to false, as progress is visible in Weights & Biases.
 """
 
 import torch
 import timm
 import wandb
+import sys
+import numpy as np
 from tqdm.auto import tqdm
 from argparse import ArgumentParser
 from torchvision.datasets import ImageFolder
-from torchvision.transforms import ToTensor, Compose, Resize, CenterCrop
+from torchvision.transforms import ToTensor, Compose, Resize, CenterCrop, Normalize
 from torch.utils.data import DataLoader
+from general import test_epoch, train_epoch
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -32,54 +34,20 @@ def parse_args():
     parser = ArgumentParser()
     parser.add_argument("--data-folder", type=str)
     parser.add_argument("--model-names", nargs='+')
-    parser.add_argument("--n-classes", type=int, default=3)
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--n-classes", type=int)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--dropout-rate", type=float, default=0.5)
     parser.add_argument("--train-image-size", type=int, default=256)
-    parser.add_argument("--print-progress", type=bool, default=False)
     try:
         return parser.parse_args()
     except SystemExit as err:
-        traceback.print_exc()
+        sys.traceback.print_exc()
         sys.exit(err.code)
 
 
-def train_epoch(model, dataloader, loss_fn, optimizer, device):
-    size = len(dataloader.dataset)
-    model.train()
-    train_loss, correct = 0, 0
-    for batch, (X, y) in enumerate(dataloader):
-        X, y = X.to(device), y.to(device)
-        pred = model(X)
-        loss = loss_fn(pred, y)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        train_loss += loss.item()
-        correct += (pred.argmax(1) == y).type(torch.float).sum().item()
-    train_loss /= size
-    correct /= size
-    return train_loss, correct
-
-
-def test_epoch(model, dataloader, loss_fn, device):
-    size = len(dataloader.dataset)
-    model.eval()
-    test_loss, correct = 0, 0
-    with torch.no_grad():
-        for X, y in dataloader:
-            X, y = X.to(device), y.to(device)
-            pred = model(X)
-            test_loss += loss_fn(pred, y).item()
-            correct += (pred.argmax(1) == y).type(torch.float).sum().item()
-    test_loss /= size
-    correct /= size
-    return test_loss, correct
-
-
-def train(model, train_dataloader, val_dataloader, loss_fn, optimizer, epochs=10, device='cpu'):
+def train(model, train_dataloader, val_dataloader, loss_fn, optimizer, epochs=10, device='cpu', experiment_id=None):
     model_name = model.__class__.__name__
     val_loss_history = []
     val_acc_history = []
@@ -87,40 +55,55 @@ def train(model, train_dataloader, val_dataloader, loss_fn, optimizer, epochs=10
     
     run = wandb.init(
         project="PTX",
+        group=f'Ensemble_Training_{experiment_id}',
+        name=model_name,
+        job_type='train',
         config={
             "model": model_name,
             "epochs": epochs,
             "batch_size": args.batch_size,
             "droupout": args.dropout_rate,
             "learning_rate": args.lr,
-            "training_image_size": args.train_image_size
+            "training_image_size": args.train_image_size,
         })
     
     for epoch in tqdm(range(epochs),
                       desc=f'Training {model_name}',
                       position=0,
                       leave=True):
-        train_loss, train_acc = train_epoch(model, train_dataloader, loss_fn, optimizer, device)
-        val_loss, val_acc = test_epoch(model, val_dataloader, loss_fn, device)
-        if args.print_progress:
-            print(f'Epoch #{epoch+1}: train_loss: {train_loss:.4f}, train_acc: {train_acc:.4f}, val_loss: {val_loss:.4f}, val_acc: {val_acc:.4f}')
+        train_loss, train_accuracy, train_sensitivity, train_specificity = train_epoch(model, train_dataloader, loss_fn, optimizer, device)
+        val_loss, val_accuracy, val_sensitivity, val_specificity = test_epoch(model, val_dataloader, loss_fn, device)
         val_loss_history.append(val_loss)
-        val_acc_history.append(val_acc)
+        val_acc_history.append(val_accuracy)
+        macro_avg_val_sensitivity = np.nanmean(val_sensitivity, axis=0)
+        macro_avg_val_specificity = np.nanmean(val_specificity, axis=0)
+        macro_avg_train_sensitivity = np.nanmean(train_sensitivity, axis=0)
+        macro_avg_train_specificity = np.nanmean(train_specificity, axis=0)
 
-        if val_acc == max(val_acc_history) and val_loss == min(val_loss_history):
-            torch.save(model.state_dict(), f'{model_name}_best.pt')            
+        if val_accuracy == max(val_acc_history) and val_loss == min(val_loss_history):
+            torch.save(model.state_dict(), f'weights/{model_name}_best.pt')            
 
-        wandb.log({'train_loss': train_loss, 'train_acc': train_acc, 'val_loss': val_loss, 'val_acc': val_acc})
+        wandb.log({f'train_loss': train_loss,
+                   f'train_acc': train_accuracy,
+                   f'train_sensitivity': macro_avg_train_sensitivity,
+                   f'train_specificity': macro_avg_train_specificity,
+                   f'val_loss': val_loss,
+                   f'val_acc': val_accuracy,
+                   f'val_sensitivity': macro_avg_val_sensitivity,
+                   f'val_specificity': macro_avg_val_specificity})
         
-    torch.save(model.state_dict(), f'{model_name}_last.pt')
-    artifact.add_file(f'{model_name}_last.pt')
-    artifact.add_file(f'{model_name}_best.pt')
+    torch.save(model.state_dict(), f'weights/{model_name}_last.pt')
+    artifact.add_file(f'weights/{model_name}_last.pt')
+    artifact.add_file(f'weights/{model_name}_best.pt')
     artifact.save()
     run.log_artifact(artifact)
     run.finish()
 
 
 def train_all_models(args):
+    
+    experiment_id = wandb.util.generate_id()
+
     transforms = Compose([
         ToTensor(),
         Resize(size=(args.train_image_size, args.train_image_size), antialias=True),
@@ -143,6 +126,9 @@ def train_all_models(args):
                                 num_classes=args.n_classes,
                                 drop_rate=args.dropout_rate) for model_name in args.model_names]
     
+    for model in models:
+        model.reset_classifier(args.n_classes, 'max')
+    
     loss_fn = torch.nn.CrossEntropyLoss() if args.n_classes > 2 else torch.nn.BCEWithLogitsLoss()
     
     print(f'Starting training for the following models:\n{args.model_names}')
@@ -154,7 +140,8 @@ def train_all_models(args):
               loss_fn=loss_fn,
               optimizer=optimizer,
               epochs=args.epochs,
-              device=DEVICE)
+              device=DEVICE,
+              experiment_id=experiment_id)
 
 
 if __name__ == "__main__":
