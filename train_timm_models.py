@@ -105,8 +105,7 @@ def train_all_models(args):
     experiment_id = wandb.util.generate_id()
 
     transforms = v2.Compose([
-        v2.ToImage(),
-        v2.ToDtype(torch.float32, scale=True),
+        v2.ToTensor(),
         v2.Resize(size=(args.train_image_size, args.train_image_size), antialias=True),
         v2.CenterCrop(size=(args.train_image_size, args.train_image_size)),
         v2.RandomEqualize(p=0.5),
