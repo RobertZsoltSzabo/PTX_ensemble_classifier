@@ -24,7 +24,7 @@ import numpy as np
 from tqdm.auto import tqdm
 from argparse import ArgumentParser
 from torchvision.datasets import ImageFolder
-from torchvision.transforms import ToTensor, Compose, Resize, CenterCrop, Normalize
+from torchvision.transforms import v2
 from torch.utils.data import DataLoader
 from general import test_epoch, train_epoch
 
@@ -104,10 +104,15 @@ def train_all_models(args):
     
     experiment_id = wandb.util.generate_id()
 
-    transforms = Compose([
-        ToTensor(),
-        Resize(size=(args.train_image_size, args.train_image_size), antialias=True),
-        CenterCrop(size=(args.train_image_size, args.train_image_size))
+    transforms = v2.Compose([
+        v2.ToImage(),
+        v2.ToDtype(torch.float32, scale=True),
+        v2.Resize(size=(args.train_image_size, args.train_image_size), antialias=True),
+        v2.CenterCrop(size=(args.train_image_size, args.train_image_size)),
+        v2.RandomEqualize(p=0.5),
+        v2.RandomHorizontalFlip(p=0.5),
+        v2.ColorJitter(brightness=0.2),
+        v2.RandomRotation(degrees=10, interpolation='bilinear')
     ])
 
     train_dataset = ImageFolder(root=f'{args.data_folder}/train', transform=transforms)

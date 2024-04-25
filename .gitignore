@@ -163,3 +163,4 @@ weights/
 wandb/
 .vscode/
 media/
+artifacts/
