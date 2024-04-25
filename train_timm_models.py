@@ -111,7 +111,7 @@ def train_all_models(args):
         v2.RandomEqualize(p=0.5),
         v2.RandomHorizontalFlip(p=0.5),
         v2.ColorJitter(brightness=0.2),
-        v2.RandomRotation(degrees=10, interpolation='bilinear')
+        v2.RandomRotation(degrees=10, interpolation=v2.InterpolationMode.BILINEAR)
     ])
 
     train_dataset = ImageFolder(root=f'{args.data_folder}/train', transform=transforms)
